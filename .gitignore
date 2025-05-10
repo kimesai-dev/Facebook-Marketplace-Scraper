@@ -1,3 +1,4 @@
 node_modules/
 .env
 fb-cookies.json
+.DS_Store
