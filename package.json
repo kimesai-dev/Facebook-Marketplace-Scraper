@@ -1,0 +1,20 @@
+{
+  "name": "facebook-fsbo-scraper",
+  "version": "1.0.0",
+  "main": "fb-puppeteer.cjs",
+  "dependencies": {
+    "axios": "^1.9.0",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.5.0",
+    "form-data": "^4.0.2",
+    "google-auth-library": "^9.15.1",
+    "imgbb-uploader": "^1.5.1",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.97.0",
+    "puppeteer": "^24.8.2",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "sharp": "^0.34.1",
+    "winston": "^3.17.0"
+  }
+}
