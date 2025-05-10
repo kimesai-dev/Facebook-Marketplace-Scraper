@@ -1,12 +1,11 @@
 // fb-sync.cjs
-require('dotenv').config();
+require('dotenv').config()
 
-const puppeteer = require('puppeteer');
-const fs        = require('fs');
-const path      = require('path');
-const axios     = require('axios');
-const winston   = require('winston');
-
+const puppeteer = require('puppeteer')
+const fs        = require('fs')
+const path      = require('path')
+const axios     = require('axios')
+const winston   = require('winston')
 // ─── 1. LOGGER ───────────────────────────────────────────────────────────────
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'debug',
@@ -28,7 +27,7 @@ const SEARCH_URL    = 'https://www.facebook.com/marketplace/fortwayne/search/?qu
 const COOKIES_PATH  = path.join(__dirname, 'fb-cookies.json');
 const ATTEMPT_LIMIT = 3;
 const MAX_IMAGES    = 5;
-// fallback now points at port 3001
+// your CRM is on port 3000
 const CRM_ENDPOINT  = process.env.CRM_ENDPOINT || 'http://localhost:3000/api/leads/import';
 
 const delay       = ms => new Promise(r => setTimeout(r, ms));
@@ -220,20 +219,31 @@ async function autoScroll(page) {
           if (!ai) throw new Error('GPT returned no valid JSON');
 
           // 2️⃣ Send to CRM
+          const numericPrice = parseInt(priceText.replace(/[^\d]/g, ''), 10);
+          const payload = {
+            link,
+            title,
+            description,
+            price: numericPrice,              // numeric price
+            images: imageUrls,
+            ai,
+            source: 'facebook-marketplace',    // add required metadata
+            createdAt: new Date().toISOString()
+          };
+
           try {
-            const payload = { link, title, description, price: priceText, images: imageUrls, ai };
-            const crmRes  = await axios.post(CRM_ENDPOINT, payload, { timeout: 10000 });
+            const crmRes = await axios.post(CRM_ENDPOINT, payload, { timeout: 10000 });
             logger.info('✅ Sent to CRM', { status: crmRes.status, link });
             success = true;
-          } catch (crmErr) {
+          } catch (err) {
             logger.error('🚨 CRM rejected payload', {
-              status: crmErr.response?.status,
-              body:   crmErr.response?.data
+              status: err.response?.status,
+              body:   err.response?.data
             });
             if (attempt < ATTEMPT_LIMIT) {
               await delay(2000);
             } else {
-              throw crmErr;
+              throw err;
             }
           }
         } catch (err) {
