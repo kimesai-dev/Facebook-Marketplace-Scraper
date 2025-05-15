@@ -5,39 +5,62 @@ const fs = require('fs');
 const path = require('path');
 
 const COOKIES_PATH = path.join(__dirname, 'fb-cookies.json');
-const TEST_LISTING_URL = 'https://www.facebook.com/marketplace/item/1234567890'; // Replace with real listing URL
 const MESSAGE = "Hey! I am interested in this house—can you give me some more details and an address please?";
+
+const leads = [
+  {
+    link: "https://www.facebook.com/marketplace/item/475541468712563/?ref=browse_tab&referral_code=marketplace_top_picks&referral_story_type=top_picks"
+  }
+];
+
+const LOG_PATH = path.join(__dirname, 'sent-messages.json');
+let sentMessages = {};
+if (fs.existsSync(LOG_PATH)) {
+  sentMessages = JSON.parse(fs.readFileSync(LOG_PATH, 'utf8'));
+}
 
 (async () => {
   const browser = await puppeteer.launch({ headless: false, defaultViewport: null });
   const page = await browser.newPage();
 
-  // Load your Facebook cookies
+  // Load cookies
   const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'));
   await page.setCookie(...cookies);
 
-  console.log("▶️ Navigating to listing...");
-  await page.goto(TEST_LISTING_URL, { waitUntil: 'networkidle2' });
+  for (const lead of leads) {
+    const url = lead.link || lead.url;
+    if (!url || sentMessages[url]) continue;
 
-  // Wait for Message button and click it
-  try {
-    console.log("💬 Looking for message button...");
-    await page.waitForSelector('div[aria-label^="Message"]', { timeout: 10000 });
-    await page.click('div[aria-label^="Message"]');
-    await page.waitForTimeout(2000);
+    console.log(`💬 Messaging: ${url}`);
+    try {
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Type the message
-    const messageBox = await page.waitForSelector('div[contenteditable="true"]', { timeout: 10000 });
-    await messageBox.type(MESSAGE, { delay: 50 });
+      // 🔕 Try to close notifications popup
+      try {
+        await page.waitForSelector('[aria-label="Close"]', { timeout: 5000 });
+        await page.click('[aria-label="Close"]');
+        console.log("🔕 Closed notification popup.");
+      } catch {}
 
-    // Press Enter to send
-    await page.keyboard.press('Enter');
-    console.log("✅ Message sent!");
+      await page.waitForSelector('div[aria-label^="Message"]', { timeout: 10000 });
+      await page.click('div[aria-label^="Message"]');
+      await new Promise(resolve => setTimeout(resolve, 2000));
 
-  } catch (err) {
-    console.error("❌ Failed to send message:", err.message);
+      const messageBox = await page.waitForSelector('div[contenteditable="true"]', { timeout: 10000 });
+      await messageBox.type(MESSAGE, { delay: 50 });
+      await page.keyboard.press('Enter');
+
+      console.log(`✅ Message sent to ${url}`);
+      sentMessages[url] = { status: "sent", timestamp: new Date().toISOString() };
+
+    } catch (err) {
+      console.error(`❌ Failed to message ${url}: ${err.message}`);
+      sentMessages[url] = { status: "failed", error: err.message, timestamp: new Date().toISOString() };
+    }
+
+    fs.writeFileSync(LOG_PATH, JSON.stringify(sentMessages, null, 2));
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
 
-  await page.waitForTimeout(5000);
   await browser.close();
 })();
