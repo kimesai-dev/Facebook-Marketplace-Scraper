@@ -1,0 +1,24 @@
+node:internal/modules/cjs/loader:1404
+  throw err;
+  ^
+
+Error: Cannot find module 'module-alias/register'
+Require stack:
+- /Users/danielkimes/Downloads/Project Freedom/Freedom fb scraper/fb-sync.cjs
+    at Function._resolveFilename (node:internal/modules/cjs/loader:1401:15)
+    at defaultResolveImpl (node:internal/modules/cjs/loader:1057:19)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1062:22)
+    at Function._load (node:internal/modules/cjs/loader:1211:37)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24)
+    at Module.require (node:internal/modules/cjs/loader:1487:12)
+    at require (node:internal/modules/helpers:135:16)
+    at Object.<anonymous> (/Users/danielkimes/Downloads/Project Freedom/Freedom fb scraper/fb-sync.cjs:8:1)
+    at Module._compile (node:internal/modules/cjs/loader:1730:14) {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: [
+    '/Users/danielkimes/Downloads/Project Freedom/Freedom fb scraper/fb-sync.cjs'
+  ]
+}
+
+Node.js v22.15.0

@@ -1,264 +1,215 @@
-// fb-sync.cjs
-require('dotenv').config()
+#!/usr/bin/env node
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const puppeteer = require('puppeteer');
+const axios = require('axios');
+const winston = require('winston');
+const OpenAI = require('openai');
 
-const puppeteer = require('puppeteer')
-const fs        = require('fs')
-const path      = require('path')
-const axios     = require('axios')
-const winston   = require('winston')
-// ─── 1. LOGGER ───────────────────────────────────────────────────────────────
+// ——— logger ———
 const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'debug',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
-  transports: [ new winston.transports.Console() ]
+  level: 'info',
+  format: winston.format.simple(),
+  transports: [ new winston.transports.Console() ],
 });
 
-// ─── 2. ENV CHECK ─────────────────────────────────────────────────────────────
-if (!process.env.OPENAI_API_KEY) {
-  logger.error('❌ Missing OPENAI_API_KEY in .env');
-  process.exit(1);
+// ——— paths & clients ———
+const ROOT = process.cwd();
+const COOKIES_PATH = path.join(ROOT, 'fb-cookies.json');
+const SCREENSHOTS = path.join(ROOT, 'screenshots');
+if (!fs.existsSync(SCREENSHOTS)) fs.mkdirSync(SCREENSHOTS);
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+async function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ─── 3. CONSTS/HELPERS ───────────────────────────────────────────────────────
-const SEARCH_URL    = 'https://www.facebook.com/marketplace/fortwayne/search/?query=house%20for%20sale%20by%20owner';
-const COOKIES_PATH  = path.join(__dirname, 'fb-cookies.json');
-const ATTEMPT_LIMIT = 3;
-const MAX_IMAGES    = 5;
-// your CRM is on port 3000
-const CRM_ENDPOINT  = process.env.CRM_ENDPOINT || 'http://localhost:3000/api/leads/import';
-
-const delay       = ms => new Promise(r => setTimeout(r, ms));
-const randomDelay = () => delay(1000 + Math.floor(Math.random() * 2000));
-
-// ─── 4. AXIOS INTERCEPTORS ──────────────────────────────────────────────────
-axios.interceptors.request.use(cfg => {
-  logger.debug('→ AXIOS REQUEST', {
-    method: cfg.method,
-    url: cfg.url,
-    data: cfg.data,
-  });
-  return cfg;
-});
-axios.interceptors.response.use(
-  res => {
-    logger.debug('← AXIOS RESPONSE', { status: res.status, url: res.config.url });
-    return res;
-  },
-  err => {
-    logger.error('← AXIOS ERROR', {
-      url: err.config?.url,
-      status: err.response?.status,
-      message: err.message,
-      responseData: err.response?.data
-    });
-    return Promise.reject(err);
-  }
-);
-
-// ─── 5. GPT ANALYSIS ──────────────────────────────────────────────────────────
-async function analyzeWithGPT(base64Images, title, description, priceText) {
-  const messages = [{
-    role: 'user',
-    content: [
-      { type: 'text', text:
-        `You are analyzing a real estate listing. Use title, description, price, and all images together.
-
-Listing Title: ${title}
-Listing Description: ${description}
-Asking Price: ${priceText}
-
-Return only this JSON:
-{
-  "motivation_score": 1-10,
-  "rehab_level": "low"|"medium"|"high",
-  "location_clue": "...",
-  "show_me_why": "..."
-}`
-      },
-      ...base64Images.map(b64 => ({
-        type: 'image_url',
-        image_url: { url: `data:image/jpeg;base64,${b64}` }
-      }))
-    ]
-  }];
-
-  for (let i = 0; i < ATTEMPT_LIMIT; i++) {
-    try {
-      const res = await axios.post(
-        'https://api.openai.com/v1/chat/completions',
-        { model: 'gpt-4o', messages, temperature: 0.4 },
-        {
-          headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-          timeout: 15000
-        }
-      );
-
-      const raw = res.data.choices[0].message.content;
-      const match = raw.match(/\{[\s\S]*?\}/);
-      const parsed = match ? JSON.parse(match[0]) : null;
-
-      if (
-        parsed &&
-        typeof parsed.motivation_score === 'number' &&
-        typeof parsed.rehab_level     === 'string' &&
-        typeof parsed.location_clue   === 'string' &&
-        typeof parsed.show_me_why     === 'string'
-      ) {
-        logger.info('🧠 GPT parsed JSON', parsed);
-        return parsed;
-      }
-      throw new Error('Invalid GPT JSON');
-    } catch (err) {
-      logger.warn(`❌ GPT error (attempt ${i+1}): ${err.message}`);
-      const retryMatch = err.message.match(/try again in ([\d.]+)s/i);
-      await delay(retryMatch ? +retryMatch[1] * 1000 : 3000);
-    }
-  }
-  return null;
-}
-
-// ─── 6. AUTO SCROLL ───────────────────────────────────────────────────────────
 async function autoScroll(page) {
   await page.evaluate(async () => {
-    await new Promise(resolve => {
-      let total = 0, step = 500;
-      const iv = setInterval(() => {
-        window.scrollBy(0, step);
-        total += step;
-        if (total >= 8000) clearInterval(iv), resolve();
-      }, 500);
+    await new Promise((resolve) => {
+      let total = 0;
+      const distance = 300;
+      const timer = setInterval(() => {
+        window.scrollBy(0, distance);
+        total += distance;
+        if (total >= 5000) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 300);
     });
   });
 }
 
-// ─── 7. MAIN ─────────────────────────────────────────────────────────────────
 ;(async () => {
-  logger.info('🟢 Starting fb-sync script');
-  try {
-    const browser = await puppeteer.launch({ headless: false, dumpio: true });
-    const mainPage = await browser.newPage();
+  logger.info('🚀 Launching browser…');
+  const browser = await puppeteer.launch({ headless: false });
+  const page = await browser.newPage();
 
-    if (fs.existsSync(COOKIES_PATH)) {
-      const ck = JSON.parse(fs.readFileSync(COOKIES_PATH));
-      await mainPage.setCookie(...ck);
-    }
-
-    logger.info('▶️ Navigating to Marketplace');
-    await mainPage.goto(SEARCH_URL, { waitUntil: 'domcontentloaded' });
-    fs.writeFileSync(COOKIES_PATH, JSON.stringify(await mainPage.cookies(), null, 2));
-
-    await delay(4000);
-    await autoScroll(mainPage);
-    logger.info('✔️ Marketplace loaded & scrolled');
-
-    const links = await mainPage.$$eval(
-      'a[href*="/marketplace/item/"]',
-      els => Array.from(new Set(els.map(a => a.href.split('?')[0])))
-    );
-    logger.info(`✅ Found ${links.length} listings`);
-
-    for (const link of links) {
-      logger.info('🔗 Processing listing', { link });
-      await randomDelay();
-
-      let attempt = 0, success = false;
-      while (attempt < ATTEMPT_LIMIT && !success) {
-        attempt++;
-        const page = await browser.newPage();
-
-        try {
-          await page.goto(link, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForSelector('body', { timeout: 10000 });
-
-          const { title, description, priceText, imageUrls, base64Images } =
-            await page.evaluate((MAX) => {
-              const allText = Array.from(document.querySelectorAll('span,div'))
-                .map(el => el.innerText.trim()).filter(Boolean);
-              const priceText = allText.find(t => /^\$\d+(?:,\d{3})*(?:\.\d{2})?$/.test(t)) || null;
-              const description = allText.find(t =>
-                t.length > 30 && t.length < 500 &&
-                !/notification|facebook|memories|birthday/i.test(t)
-              ) || null;
-              const imgs = Array.from(document.querySelectorAll('img'))
-                .filter(i =>
-                  i.src.includes('scontent') &&
-                  !i.src.includes('/emoji/') &&
-                  i.naturalWidth >= 200 && i.naturalHeight >= 200
-                ).slice(0, MAX);
-              async function toB64(url) {
-                const r = await fetch(url);
-                const blob = await r.blob();
-                return new Promise(res => {
-                  const fr = new FileReader();
-                  fr.onloadend = () => res(fr.result.split(',')[1]);
-                  fr.readAsDataURL(blob);
-                });
-              }
-              const base64Images = [];
-              return Promise.all(imgs.map(i =>
-                toB64(i.src).then(b64 => base64Images.push(b64)).catch(() => {})
-              ))
-              .then(() => ({
-                title: document.title,
-                description,
-                priceText,
-                imageUrls: imgs.map(i => i.src),
-                base64Images
-              }));
-            }, MAX_IMAGES);
-
-          if (!description || !priceText || imageUrls.length === 0) {
-            throw new Error('Insufficient data for GPT analysis');
-          }
-
-          // 1️⃣ GPT analysis
-          const ai = await analyzeWithGPT(base64Images, title, description, priceText);
-          if (!ai) throw new Error('GPT returned no valid JSON');
-
-          // 2️⃣ Send to CRM
-          const numericPrice = parseInt(priceText.replace(/[^\d]/g, ''), 10);
-          const payload = {
-            link,
-            title,
-            description,
-            price: numericPrice,              // numeric price
-            images: imageUrls,
-            ai,
-            source: 'facebook-marketplace',    // add required metadata
-            createdAt: new Date().toISOString()
-          };
-
-          try {
-            const crmRes = await axios.post(CRM_ENDPOINT, payload, { timeout: 10000 });
-            logger.info('✅ Sent to CRM', { status: crmRes.status, link });
-            success = true;
-          } catch (err) {
-            logger.error('🚨 CRM rejected payload', {
-              status: err.response?.status,
-              body:   err.response?.data
-            });
-            if (attempt < ATTEMPT_LIMIT) {
-              await delay(2000);
-            } else {
-              throw err;
-            }
-          }
-        } catch (err) {
-          logger.warn(`⚠️ Attempt ${attempt} failed: ${err.message}`);
-          if (attempt >= ATTEMPT_LIMIT) throw err;
-        } finally {
-          await page.close();
-        }
-      }
-    }
-
-    await browser.close();
-    logger.info('🟢 fb-sync script complete');
-  } catch (err) {
-    logger.error('💥 Fatal error in fb-sync', { stack: err.stack });
-    process.exit(1);
+  // — load cookies
+  let cookies = [];
+  if (fs.existsSync(COOKIES_PATH)) {
+    cookies = JSON.parse(fs.readFileSync(COOKIES_PATH, 'utf8'));
+    await page.setCookie(...cookies);
+    logger.info('✅ Facebook cookies loaded');
   }
+
+  await page.goto('https://www.facebook.com/marketplace/fortwayne/search/?query=house%20for%20sale%20by%20owner', { waitUntil: 'networkidle2' });
+  await delay(4000);
+
+  // — login if needed
+  if (await page.$('input[name="email"]')) {
+    logger.info('🔐 Logging in...');
+    await page.type('input[name="email"]', process.env.FB_EMAIL, { delay: 50 });
+    await page.type('input[name="pass"]', process.env.FB_PASSWORD, { delay: 50 });
+    await Promise.all([
+      page.click('button[name="login"]'),
+      page.waitForNavigation({ waitUntil: 'networkidle2' }),
+    ]);
+    cookies = await page.cookies();
+    fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+    logger.info('✅ Logged in & cookies saved');
+  }
+
+  logger.info('📜 Scrolling Marketplace...');
+  await autoScroll(page);
+  await delay(2000);
+
+  const listings = await page.$$eval('a[href*="/marketplace/item/"]', anchors =>
+    [...new Set(anchors.map(a => a.href))].slice(0, 20)
+  );
+
+  logger.info(`📦 Found ${listings.length} listings`);
+  const leads = [];
+
+  for (let i = 0; i < listings.length; i++) {
+    const link = listings[i];
+    logger.info(`\n🔗 Processing listing ${i + 1}: ${link}`);
+
+    try {
+      const tab = await browser.newPage();
+      await tab.setCookie(...cookies);
+      await tab.goto(link, { waitUntil: 'domcontentloaded' });
+      await delay(5000);
+      await tab.evaluate(() => window.scrollBy(0, 500));
+      await tab.waitForSelector('h1, div[role="heading"]', { timeout: 7000 }).catch(() => {});
+
+      const title = await tab.evaluate(() => {
+        const el = document.querySelector('h1, div[role="heading"]');
+        return el?.innerText || '';
+      });
+
+      const description = await tab.evaluate(() => {
+        const el = document.querySelector('[data-testid*="description"], div[aria-label="Description"]');
+        return el?.innerText || '';
+      });
+
+      const priceText = await tab.evaluate(() => {
+        const candidates = [...document.querySelectorAll('span, div')];
+        const match = candidates.find(el => el.textContent.includes('$') && el.textContent.length < 20);
+        return match?.innerText || '';
+      });
+
+      if (!title && !description && !priceText) {
+        logger.warn('⚠️ Could not extract title, description, or price — skipping');
+        await tab.close();
+        continue;
+      }
+
+      logger.info(`📌 Title: ${title}`);
+      logger.info(`💬 Description: ${description}`);
+      logger.info(`💲 Price: ${priceText}`);
+
+      await tab.waitForSelector('img[src*="scontent"]', { timeout: 8000 }).catch(() => {});
+      const images = await tab.evaluate(() => {
+        const seen = new Set();
+        const gallery = [...document.querySelectorAll('img[src*="scontent"]')];
+        const visible = gallery.filter(img => {
+          const r = img.getBoundingClientRect();
+          return r.width > 250 && r.height > 250 && !seen.has(img.src) && seen.add(img.src);
+        });
+        return visible.map(img => img.src).slice(0, 3);
+      });
+
+      if (images.length === 0) {
+        logger.warn('⚠️ No valid listing images found for GPT Vision.');
+        await tab.close();
+        continue;
+      }
+
+      logger.info(`🖼️ Found ${images.length} image(s)`);
+
+      const debugPath = path.join(SCREENSHOTS, `debug-${i + 1}.png`);
+      await tab.screenshot({ path: debugPath, fullPage: true });
+      logger.info(`🧪 Screenshot saved to: ${debugPath}`);
+
+      const imageBuffers = await Promise.all(
+        images.map(async (src) => {
+          const response = await axios.get(src, { responseType: 'arraybuffer' });
+          const base64 = Buffer.from(response.data, 'binary').toString('base64');
+          return {
+            type: 'image_url',
+            image_url: { url: `data:image/jpeg;base64,${base64}` }
+          };
+        })
+      );
+
+      const visionRes = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a real estate AI. Evaluate listing photos + text for signs of seller distress, repairs, and potential deals. Give a short summary and motivation score from 1–10.`,
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: `Title: ${title}\nDescription: ${description}\nPrice: ${priceText}` },
+              ...imageBuffers
+            ]
+          }
+        ],
+        temperature: 0.2,
+        max_tokens: 600,
+      });
+
+      let motivation = "Unknown";
+      let summary = "No GPT summary returned.";
+      if (visionRes?.choices?.[0]?.message?.content) {
+        summary = visionRes.choices[0].message.content.trim();
+        const match = summary.match(/Motivation Score[:\s]+(\d+\/10|\d+)/i);
+        if (match) motivation = match[1].replace("/10", "");
+        logger.info(`🧠 GPT Vision Output:\n${summary}`);
+      }
+
+      leads.push({
+        id: `lead-${i + 1}`,
+        title,
+        description,
+        location: "Fort Wayne, IN",
+        motivation,
+        price: priceText,
+        link,
+        summary
+      });
+
+      await tab.close();
+    } catch (err) {
+      logger.error(`❌ Error processing listing ${i + 1}: ${err.message}`);
+    }
+  }
+
+  // ✅ Send leads to CRM
+  try {
+    const response = await axios.post("https://freedom-backend-production.up.railway.app/api/leads/import", leads);
+    console.log(`✅ Successfully pushed ${leads.length} leads to CRM: ${response.status}`);
+  } catch (err) {
+    console.error("❌ Failed to push leads to CRM:", err.message);
+  }
+  
+
+  await browser.close();
+  logger.info('✅ All done!');
 })();
